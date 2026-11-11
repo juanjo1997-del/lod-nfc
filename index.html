@@ -1,0 +1,313 @@
+
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>LOD NFC · CEDIA</title>
+<style>
+  :root { --bg:#f4f5f7; --card:#fff; --txt:#1d2330; --sub:#667085; --line:#e1e4ea; --acc:#b4232a;
+          --ok:#1f7a4d; --ok-soft:#e5f4ec; --warn:#9a6200; --warn-soft:#fff4dd; --bad:#b4232a; --bad-soft:#fbe0e0; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:16px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; background:var(--bg); color:var(--txt); }
+  header { background:var(--acc); color:#fff; padding:12px 16px; display:flex; align-items:center; gap:10px; }
+  header h1 { font-size:18px; margin:0; flex:1; }
+  header small { opacity:.9; cursor:pointer; }
+  main { max-width:560px; margin:0 auto; padding:16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:14px; }
+  .hidden { display:none !important; }
+  label { display:block; font-size:13px; color:var(--sub); margin:10px 0 4px; }
+  input, select { width:100%; padding:12px; font:inherit; border:1px solid var(--line); border-radius:10px; background:#fff; color:var(--txt); }
+  .btn { width:100%; border:0; border-radius:10px; padding:14px; font:inherit; font-weight:700; cursor:pointer; background:var(--acc); color:#fff; margin-top:12px; }
+  .btn.sec { background:#e8eaef; color:var(--txt); }
+  .btn:disabled { opacity:.5; }
+  .modos { display:grid; grid-template-columns:repeat(4,1fr); gap:6px; margin-bottom:14px; }
+  .modo { border:1px solid var(--line); background:var(--card); border-radius:10px; padding:10px 4px; font:inherit; font-size:14px; font-weight:700; color:var(--sub); cursor:pointer; }
+  .modo.on { background:var(--txt); border-color:var(--txt); color:#fff; }
+  .lector { text-align:center; padding:22px 16px; }
+  .lector .icono { font-size:46px; }
+  .lector p { margin:6px 0 0; color:var(--sub); }
+  .estado-on { color:var(--ok) !important; font-weight:700; }
+  .res { border-radius:14px; padding:18px; margin-bottom:14px; border:2px solid transparent; }
+  .res.ok { background:var(--ok-soft); border-color:var(--ok); }
+  .res.warn { background:var(--warn-soft); border-color:var(--warn); }
+  .res.bad { background:var(--bad-soft); border-color:var(--bad); }
+  .res h2 { margin:0 0 4px; font-size:24px; }
+  .res .big { font-size:15px; font-weight:700; margin-bottom:6px; }
+  .res .av { margin-top:8px; background:#fff; border-left:4px solid var(--warn); padding:8px 10px; border-radius:6px; font-weight:600; }
+  .res .meta { color:var(--sub); font-size:14px; }
+  .item { padding:10px; border:1px solid var(--line); border-radius:10px; margin-top:8px; cursor:pointer; background:#fff; }
+  .item.sel { border-color:var(--acc); background:#fbe9ea; }
+  .item small { color:var(--sub); }
+  .muted { color:var(--sub); font-size:14px; }
+  .toast { position:fixed; left:50%; bottom:20px; transform:translateX(-50%); background:var(--txt); color:#fff; padding:10px 16px; border-radius:8px; max-width:90vw; }
+  .toast.err { background:var(--acc); }
+  #usb { position:absolute; opacity:0; width:1px; height:1px; }
+  /* Destello a pantalla completa para que el resultado se vea de lejos */
+  #flash { position:fixed; inset:0; z-index:50; display:flex; align-items:center; justify-content:center; text-align:center;
+           color:#fff; font-size:34px; font-weight:800; padding:20px; opacity:0; pointer-events:none; transition:opacity .25s; }
+  #flash.on { opacity:1; }
+  #flash.ok { background:#1f7a4d; } #flash.warn { background:#c98400; } #flash.bad { background:#b4232a; }
+  .opc { display:flex; align-items:center; gap:8px; margin-top:10px; font-size:14px; color:var(--sub); }
+  .opc input { width:auto; }
+</style>
+</head>
+<body>
+<header><h1>LOD NFC · CEDIA</h1><small id="who" class="hidden"></small></header>
+<main>
+  <!-- CONFIGURACIÓN (solo la primera vez en cada dispositivo) -->
+  <div id="cfg" class="card hidden">
+    <h2 style="margin-top:0;font-size:18px">Conectar con la LOD</h2>
+    <p class="muted">Pega la dirección de la aplicación web de la LOD (la que termina en <b>/exec</b>). Solo se pide una vez en este dispositivo.</p>
+    <input id="apiUrl" placeholder="https://script.google.com/macros/s/…/exec">
+    <button class="btn" id="btnCfg">Guardar</button>
+  </div>
+
+  <!-- PIN -->
+  <div id="login" class="card hidden">
+    <h2 style="margin-top:0;font-size:18px">Acceso</h2>
+    <label>PIN del equipo</label>
+    <input id="pin" type="password" inputmode="numeric" autocomplete="off">
+    <button class="btn" id="btnLogin">Entrar</button>
+    <p class="muted" style="margin-top:12px;cursor:pointer" id="cambiarApi">Cambiar dirección de la LOD</p>
+  </div>
+
+  <!-- QUIÉN -->
+  <div id="quien" class="card hidden">
+    <h2 style="margin-top:0;font-size:18px">¿Quién eres?</h2>
+    <select id="selQuien"></select>
+    <button class="btn" id="btnQuien">Continuar</button>
+  </div>
+
+  <!-- APP -->
+  <div id="app" class="hidden">
+    <div class="modos">
+      <button class="modo on" data-modo="ver">Plaza</button>
+      <button class="modo" data-modo="COMED">Comida</button>
+      <button class="modo" data-modo="CN">Cena</button>
+      <button class="modo" data-modo="vincular">Vincular</button>
+    </div>
+
+    <!-- Vincular: elegir persona -->
+    <div id="vinc" class="card hidden">
+      <label style="margin-top:0">Busca a la persona (nombre o expediente)</label>
+      <input id="q" autocomplete="off" placeholder="Al menos 2 letras">
+      <div id="lista"></div>
+    </div>
+
+    <div class="card lector" id="lector">
+      <div class="icono">📶</div>
+      <div id="lectorTxt" style="font-weight:700;margin-top:6px">Pulsa para activar el lector</div>
+      <p id="lectorSub">Comprobar plaza</p>
+      <button class="btn" id="btnActivar">Activar lector NFC</button>
+      <input id="usb" autocomplete="off" inputmode="none">
+    </div>
+
+    <div id="res"></div>
+    <label class="opc"><input type="checkbox" id="chkFlash"> Destello a pantalla completa (para tablet o móvil en la puerta)</label>
+  </div>
+</main>
+<div id="flash"></div>
+
+<script>
+/* Página independiente: Web NFC solo funciona fuera de marcos, por eso no va dentro de la LOD.
+   No guarda datos de residentes: solo la dirección de la LOD y la sesión (6 h). */
+const $ = s => document.querySelector(s);
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const LS = { get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
+             set(k, v) { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch (e) {} } };
+const SS = { get(k) { try { return sessionStorage.getItem(k); } catch (e) { return null; } },
+             set(k, v) { try { v == null ? sessionStorage.removeItem(k) : sessionStorage.setItem(k, v); } catch (e) {} } };
+
+let API = LS.get('lodnfc_api') || '', TOKEN = SS.get('lodnfc_token'), MODO = 'ver', SEL = null, ULT = { uid: '', t: 0 }, LEYENDO = false;
+const NOMBRE_MODO = { ver: 'Comprobar plaza', COMED: 'Apuntar COMIDA', CN: 'Apuntar CENA', vincular: 'Vincular tarjeta a la persona elegida' };
+
+function toast(m, err) { const t = document.createElement('div'); t.className = 'toast' + (err ? ' err' : ''); t.textContent = m; document.body.appendChild(t); setTimeout(() => t.remove(), err ? 5000 : 2500); }
+function vibrar(p) { try { navigator.vibrate && navigator.vibrate(p); } catch (e) {} }
+function mostrar(id) { ['cfg', 'login', 'quien', 'app'].forEach(x => $('#' + x).classList.toggle('hidden', x !== id)); }
+
+async function api(datos) {
+  const r = await fetch(API, { method: 'POST', body: JSON.stringify(Object.assign({ token: TOKEN }, datos)) });
+  const j = await r.json();
+  if (!j.ok) {
+    if (j.error === 'SESION') { TOKEN = null; SS.set('lodnfc_token', null); mostrar('login'); throw new Error('La sesión ha caducado. Vuelve a entrar.'); }
+    throw new Error(j.error);
+  }
+  return j;
+}
+
+/* ---------- arranque y sesión ---------- */
+$('#btnCfg').onclick = () => {
+  const u = $('#apiUrl').value.trim();
+  if (!/^https:\/\/script\.google\.com\/.+\/exec$/.test(u)) { toast('La dirección debe empezar por https://script.google.com/ y terminar en /exec', true); return; }
+  API = u; LS.set('lodnfc_api', u); mostrar('login');
+};
+$('#cambiarApi').onclick = () => { $('#apiUrl').value = API; mostrar('cfg'); };
+$('#btnLogin').onclick = async () => {
+  $('#btnLogin').disabled = true;
+  try {
+    const j = await api({ accion: 'login', pin: $('#pin').value });
+    TOKEN = j.token; SS.set('lodnfc_token', TOKEN); $('#pin').value = '';
+    const l = await api({ accion: 'profesionales' });
+    $('#selQuien').innerHTML = l.lista.map(n => '<option>' + esc(n) + '</option>').join('');
+    const prev = LS.get('lodnfc_quien'); if (prev) $('#selQuien').value = prev;
+    mostrar('quien');
+  } catch (e) { toast(e.message, true); } finally { $('#btnLogin').disabled = false; }
+};
+$('#pin').onkeydown = e => { if (e.key === 'Enter') $('#btnLogin').click(); };
+$('#btnQuien').onclick = async () => {
+  try {
+    const j = await api({ accion: 'usuario', nombre: $('#selQuien').value });
+    LS.set('lodnfc_quien', j.usuario); entrar(j.usuario);
+  } catch (e) { toast(e.message, true); }
+};
+$('#who').onclick = () => { if (confirm('¿Salir?')) { TOKEN = null; SS.set('lodnfc_token', null); location.reload(); } };
+function entrar(nombre) {
+  $('#who').textContent = nombre + ' · salir'; $('#who').classList.remove('hidden');
+  mostrar('app'); prepararLector();
+}
+
+/* ---------- modos ---------- */
+document.querySelectorAll('.modo').forEach(b => b.onclick = () => {
+  MODO = b.dataset.modo;
+  document.querySelectorAll('.modo').forEach(x => x.classList.toggle('on', x === b));
+  $('#vinc').classList.toggle('hidden', MODO !== 'vincular');
+  $('#lectorSub').textContent = NOMBRE_MODO[MODO] + (MODO === 'vincular' && SEL ? ': ' + SEL.Nombre : '');
+  $('#res').innerHTML = '';
+  enfocarUsb();
+});
+
+/* ---------- vincular: búsqueda ---------- */
+let tBus = null;
+$('#q').oninput = () => {
+  clearTimeout(tBus);
+  tBus = setTimeout(async () => {
+    const q = $('#q').value.trim();
+    if (q.length < 2) { $('#lista').innerHTML = ''; return; }
+    try {
+      const j = await api({ accion: 'buscar', q: q });
+      $('#lista').innerHTML = j.personas.length ? j.personas.map((p, i) =>
+        '<div class="item" data-i="' + i + '"><b>' + esc(p.Nombre) + '</b> · ' + esc(p.Expediente) +
+        '<br><small>' + esc(p.Seccion + ' ' + p.Plaza) + (p.NFC ? ' · ya tiene tarjeta' : ' · sin tarjeta') + '</small></div>').join('')
+        : '<p class="muted">No hay nadie activo con ese nombre o expediente.</p>';
+      document.querySelectorAll('#lista .item').forEach(el => el.onclick = () => {
+        SEL = j.personas[Number(el.dataset.i)];
+        document.querySelectorAll('#lista .item').forEach(x => x.classList.toggle('sel', x === el));
+        $('#lectorSub').textContent = NOMBRE_MODO.vincular + ': ' + SEL.Nombre;
+        toast('Ahora acerca la tarjeta de ' + SEL.Nombre); enfocarUsb();
+      });
+    } catch (e) { toast(e.message, true); }
+  }, 300);
+};
+
+/* ---------- lector: NFC del móvil o lector USB que escribe como teclado ---------- */
+let SIN_NFC = false; // el navegador conoce Web NFC pero el aparato no tiene NFC (muchas tablets)
+function modoUsb() {
+  SIN_NFC = true;
+  $('#btnActivar').classList.add('hidden');
+  $('#lectorTxt').textContent = 'Pasa la tarjeta por el lector USB';
+  $('#lectorTxt').classList.add('estado-on');
+  $('#lectorSub').textContent = NOMBRE_MODO[MODO];
+  enfocarUsb();
+}
+function prepararLector() {
+  if ('NDEFReader' in window && !SIN_NFC) {
+    $('#lectorTxt').textContent = 'Pulsa para activar el lector';
+    $('#btnActivar').classList.remove('hidden');
+  } else {
+    // PC con lector USB (o móvil sin Web NFC): se recoge lo que "teclea" el lector
+    $('#btnActivar').classList.add('hidden');
+    $('#lectorTxt').textContent = 'Pasa la tarjeta por el lector USB';
+    $('#lectorTxt').classList.add('estado-on');
+    $('#lectorSub').textContent = NOMBRE_MODO[MODO];
+    enfocarUsb();
+  }
+}
+function enfocarUsb() { if (!('NDEFReader' in window) || SIN_NFC) setTimeout(() => $('#usb').focus(), 50); }
+document.addEventListener('click', e => { if (!e.target.closest('input,select,button')) enfocarUsb(); });
+$('#usb').onkeydown = e => {
+  if (e.key === 'Enter') { const v = $('#usb').value.trim(); $('#usb').value = ''; if (v) leida(v); }
+};
+
+$('#btnActivar').onclick = async () => {
+  try {
+    const r = new NDEFReader();
+    await r.scan();
+    r.onreading = ev => leida(ev.serialNumber);
+    r.onreadingerror = () => toast('No se ha podido leer la tarjeta. Prueba otra vez.', true);
+    LEYENDO = true;
+    $('#btnActivar').classList.add('hidden');
+    $('#lectorTxt').textContent = 'Lector activo: acerca la tarjeta';
+    $('#lectorTxt').classList.add('estado-on');
+    vibrar(50);
+  } catch (e) {
+    if (e.name === 'NotSupportedError') { toast('Este aparato no tiene NFC: se usará el lector USB'); modoUsb(); return; }
+    toast(e.name === 'NotAllowedError' ? 'Hay que permitir el NFC a esta página' :
+      e.name === 'NotReadableError' ? 'El NFC está apagado: actívalo en los ajustes del aparato' : 'No se pudo activar el NFC: ' + e.message, true);
+  }
+};
+
+async function leida(uid) {
+  if (!uid) { toast('Esta tarjeta no tiene número legible', true); return; }
+  const ahora = Date.now();
+  if (uid === ULT.uid && ahora - ULT.t < 3000) return; // evita lecturas dobles
+  ULT = { uid: uid, t: ahora };
+  $('#res').innerHTML = '<div class="res"><span class="muted">Consultando…</span></div>';
+  try {
+    if (MODO === 'vincular') {
+      if (!SEL) { pintar('warn', 'Primero elige a la persona', 'Búscala arriba y tócala; después acerca la tarjeta.'); return; }
+      const j = await api({ accion: 'vincular', exp: SEL.Expediente, uid: uid });
+      pintarPersona('ok', 'Tarjeta vinculada ✓', j.persona); vibrar([60, 40, 60]);
+      SEL = null; $('#q').value = ''; $('#lista').innerHTML = ''; $('#lectorSub').textContent = NOMBRE_MODO.vincular;
+      return;
+    }
+    const j = MODO === 'ver' ? await api({ accion: 'leer', uid: uid }) : await api({ accion: 'marcar', uid: uid, tipo: MODO });
+    if (!j.encontrada) { pintar('bad', 'SIN PLAZA o tarjeta no vinculada', 'Tarjeta ' + esc(j.uid)); vibrar([300, 100, 300]); return; }
+    const p = j.persona, muchas = p.faltas >= p.limite;
+    if (MODO === 'ver') { pintarPersona(muchas ? 'warn' : 'ok', 'Tiene plaza ✓', p); vibrar(80); return; }
+    const que = MODO === 'COMED' ? 'Comida' : 'Cena';
+    if (j.marcado) { pintarPersona(muchas ? 'warn' : 'ok', que + ' apuntada ✓', p); vibrar(80); }
+    else if (j.repetido) { pintarPersona('warn', que + ': ya estaba apuntada hoy', p); vibrar([150, 80, 150]); }
+    else { pintarPersona('bad', j.motivo, p); vibrar([300, 100, 300]); }
+  } catch (e) { pintar('bad', 'Error', esc(e.message)); }
+}
+
+let tFlash = null;
+function destello(tipo, texto) {
+  if (!$('#chkFlash').checked) return;
+  const f = $('#flash');
+  f.className = tipo + ' on'; f.textContent = texto;
+  clearTimeout(tFlash); tFlash = setTimeout(() => { f.className = tipo; }, 2000);
+}
+$('#chkFlash').checked = LS.get('lodnfc_flash') === '1';
+$('#chkFlash').onchange = () => LS.set('lodnfc_flash', $('#chkFlash').checked ? '1' : '0');
+
+function pintar(tipo, titulo, html) {
+  destello(tipo, titulo); $('#res').innerHTML = '<div class="res ' + tipo + '"><div class="big">' + esc(titulo) + '</div>' + (html || '') + '</div>'; }
+function pintarPersona(tipo, titulo, p) {
+  destello(tipo, titulo + ' · ' + p.Nombre);
+  $('#res').innerHTML = '<div class="res ' + tipo + '"><div class="big">' + esc(titulo) + '</div>' +
+    '<h2>' + esc(p.Nombre) + '</h2>' +
+    '<div class="meta">' + esc(p.Expediente) + ' · ' + esc(p.Seccion) + ' ' + esc(p.Plaza) + (p.TipoPlaza === 'ESCM' ? ' · ESCM' : '') +
+      (p.Pension ? ' · duerme en ' + esc(p.Pension) : '') + '<br>T.S ' + esc(p.TS || '—') + ' · I.S ' + esc(p.IS || '—') + '</div>' +
+    '<div class="meta" style="margin-top:6px">Hoy: comida ' + (p.comedor.COMED === 'X' ? '✓' : '—') + ' · cena ' + (p.comedor.CN === 'X' ? '✓' : '—') +
+      (p.comedor.JUST === 'X' ? ' · falta justificada' : '') + '</div>' +
+    (p.faltas ? '<div class="av" style="border-color:' + (p.faltas >= p.limite ? 'var(--bad)' : 'var(--warn)') + '">' +
+      (p.faltas >= p.limite ? '⚠ ' : '') + p.faltas + ' falta(s) sin justificar esta semana</div>' : '') +
+    (p.Avisos ? '<div class="av">' + esc(p.Avisos) + '</div>' : '') + '</div>';
+}
+
+/* ---------- inicio ---------- */
+(async () => {
+  if (!API) { mostrar('cfg'); return; }
+  if (!TOKEN) { mostrar('login'); return; }
+  try {
+    const q = LS.get('lodnfc_quien');
+    if (q) { const j = await api({ accion: 'usuario', nombre: q }); entrar(j.usuario); }
+    else { const l = await api({ accion: 'profesionales' }); $('#selQuien').innerHTML = l.lista.map(n => '<option>' + esc(n) + '</option>').join(''); mostrar('quien'); }
+  } catch (e) { mostrar('login'); }
+})();
+</script>
+</body>
+</html>
