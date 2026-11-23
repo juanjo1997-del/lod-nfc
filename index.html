@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="es">
 <head>
@@ -51,6 +50,17 @@
   #flash.ok { background:#1f7a4d; } #flash.warn { background:#c98400; } #flash.bad { background:#b4232a; }
   .opc { display:flex; align-items:center; gap:8px; margin-top:10px; font-size:14px; color:var(--sub); }
   .opc input { width:auto; }
+  /* Pantalla grande (tablet en la puerta): enseña lo que lee el móvil */
+  #pant { position:fixed; inset:0; z-index:60; display:flex; flex-direction:column; align-items:center; justify-content:center;
+          text-align:center; padding:4vh 4vw; color:#fff; background:#1d2330; transition:background .2s; }
+  #pant.ok { background:#1f7a4d; } #pant.warn { background:#c98400; } #pant.bad { background:#b4232a; }
+  #pant .p-ico { font-size:22vh; line-height:1; font-weight:800; }
+  #pant .p-tit { font-size:7vh; font-weight:800; margin-top:2vh; }
+  #pant .p-nom { font-size:9vh; font-weight:800; margin-top:1vh; }
+  #pant .p-lug { font-size:5vh; opacity:.9; margin-top:1vh; }
+  #pant .p-hora { font-size:4vh; opacity:.6; margin-top:4vh; }
+  #pant .p-pie { position:absolute; left:0; right:0; bottom:10px; display:flex; justify-content:space-between; padding:0 16px; font-size:13px; opacity:.6; }
+  #pant .p-pie button { background:none; border:1px solid rgba(255,255,255,.5); color:#fff; border-radius:8px; padding:6px 12px; font:inherit; cursor:pointer; }
 </style>
 </head>
 <body>
@@ -106,9 +116,19 @@
 
     <div id="res"></div>
     <label class="opc"><input type="checkbox" id="chkFlash"> Destello a pantalla completa (para tablet o móvil en la puerta)</label>
+    <label class="opc"><input type="checkbox" id="chkSonido"> Sonido: pitido agudo si tiene plaza, zumbido grave si no</label>
+    <button class="btn sec" id="btnProbarSonido" type="button" style="margin-top:6px">🔊 Probar sonidos</button>
+    <div class="card" style="margin-top:14px">
+      <b>Pantalla grande en la puerta</b>
+      <p class="muted" style="margin:4px 0 0">El móvil lee la tarjeta y una tablet enseña el resultado en grande. En la tablet entra con el PIN y pulsa «Usar como pantalla»; en el móvil marca la casilla.</p>
+      <label class="opc"><input type="checkbox" id="chkPantalla"> Este móvil envía el resultado a la pantalla grande</label>
+      <button class="btn sec" id="btnPantalla" type="button">📺 Usar este aparato como pantalla grande</button>
+    </div>
   </div>
 </main>
 <div id="flash"></div>
+<div id="pant" class="hidden"><div id="pantCont"></div>
+  <div class="p-pie"><span id="pantEstado">Conectando…</span><button id="pantSalir" type="button">Salir</button></div></div>
 
 <script>
 /* Página independiente: Web NFC solo funciona fuera de marcos, por eso no va dentro de la LOD.
@@ -226,9 +246,19 @@ function prepararLector() {
 }
 function enfocarUsb() { if (!('NDEFReader' in window) || SIN_NFC) setTimeout(() => $('#usb').focus(), 50); }
 document.addEventListener('click', e => { if (!e.target.closest('input,select,button')) enfocarUsb(); });
-$('#usb').onkeydown = e => {
-  if (e.key === 'Enter') { const v = $('#usb').value.trim(); $('#usb').value = ''; if (v) leida(v); }
-};
+// Lector USB "modo teclado": algunos terminan con Intro y otros no; si no llega Intro, se procesa al dejar de escribir
+let tUsb = null;
+function procesarUsb() { clearTimeout(tUsb); const v = $('#usb').value.trim(); $('#usb').value = ''; if (v) leida(v); }
+$('#usb').onkeydown = e => { if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); procesarUsb(); } };
+$('#usb').oninput = () => { clearTimeout(tUsb); tUsb = setTimeout(procesarUsb, 400); };
+// Indicador de que la página está escuchando al lector USB
+setInterval(() => {
+  if (!SIN_NFC && 'NDEFReader' in window) return;
+  const activo = document.activeElement === $('#usb');
+  $('#lectorTxt').textContent = activo ? 'Pasa la tarjeta por el lector USB' : 'Toca aquí para volver a escuchar el lector';
+  $('#lectorTxt').classList.toggle('estado-on', activo);
+}, 700);
+$('#lector').onclick = () => enfocarUsb();
 
 $('#btnActivar').onclick = async () => {
   try {
@@ -262,7 +292,8 @@ async function leida(uid) {
       SEL = null; $('#q').value = ''; $('#lista').innerHTML = ''; $('#lectorSub').textContent = NOMBRE_MODO.vincular;
       return;
     }
-    const j = MODO === 'ver' ? await api({ accion: 'leer', uid: uid }) : await api({ accion: 'marcar', uid: uid, tipo: MODO });
+    const canal = $('#chkPantalla').checked ? CANAL : '';
+    const j = MODO === 'ver' ? await api({ accion: 'leer', uid: uid, canal: canal }) : await api({ accion: 'marcar', uid: uid, tipo: MODO, canal: canal });
     if (!j.encontrada) { pintar('bad', 'SIN PLAZA o tarjeta no vinculada', 'Tarjeta ' + esc(j.uid)); vibrar([300, 100, 300]); return; }
     const p = j.persona, muchas = p.faltas >= p.limite;
     if (MODO === 'ver') { pintarPersona(muchas ? 'warn' : 'ok', 'Tiene plaza ✓', p); vibrar(80); return; }
@@ -280,13 +311,92 @@ function destello(tipo, texto) {
   f.className = tipo + ' on'; f.textContent = texto;
   clearTimeout(tFlash); tFlash = setTimeout(() => { f.className = tipo; }, 2000);
 }
+/* ---------- sonido (sale por el altavoz del aparato o los altavoces conectados) ---------- */
+let AC = null;
+function audio() {
+  try { if (!AC) AC = new (window.AudioContext || window.webkitAudioContext)(); if (AC.state === 'suspended') AC.resume(); } catch (e) {}
+  return AC;
+}
+// Los navegadores solo dejan sonar después de un primer toque o tecla en la página
+document.addEventListener('pointerdown', audio, { once: false, passive: true });
+document.addEventListener('keydown', audio, { passive: true });
+function tono(frec, ini, dur, forma) {
+  const ac = audio(); if (!ac) return;
+  const o = ac.createOscillator(), g = ac.createGain(), t = ac.currentTime + ini;
+  o.type = forma; o.frequency.value = frec;
+  g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.9, t + 0.01);
+  g.gain.setValueAtTime(0.9, t + dur - 0.03); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g); g.connect(ac.destination); o.start(t); o.stop(t + dur + 0.02);
+}
+function sonar(tipo, forzar) {
+  if (!forzar && !$('#chkSonido').checked) return;
+  if (tipo === 'ok') { tono(1400, 0, 0.12, 'square'); tono(1900, 0.16, 0.18, 'square'); }          // dos pitidos agudos
+  else if (tipo === 'warn') { [0, 0.22, 0.44].forEach(i => tono(900, i, 0.14, 'square')); }       // tres pitidos medios
+  else { tono(180, 0, 0.7, 'sawtooth'); tono(150, 0.85, 0.7, 'sawtooth'); }                        // zumbido grave doble
+}
+$('#chkSonido').checked = LS.get('lodnfc_sonido') !== '0';
+$('#chkSonido').onchange = () => LS.set('lodnfc_sonido', $('#chkSonido').checked ? '1' : '0');
+$('#btnProbarSonido').onclick = () => { audio(); sonar('ok', true); setTimeout(() => sonar('warn', true), 900); setTimeout(() => sonar('bad', true), 2000);
+  toast('Suenan: tiene plaza · aviso · sin plaza'); };
+/* ---------- pantalla grande ---------- */
+const CANAL = 'PUERTA';
+$('#chkPantalla').checked = LS.get('lodnfc_envia') === '1';
+$('#chkPantalla').onchange = () => LS.set('lodnfc_envia', $('#chkPantalla').checked ? '1' : '0');
+const PANT = { on: false, base: false, ult: 0, t: null, vuelta: null, ocupado: false, wake: null };
+function pantReposo() {
+  $('#pant').className = '';
+  const h = new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
+  $('#pantCont').innerHTML = '<div class="p-ico">📶</div><div class="p-tit">Acerca tu tarjeta al lector</div><div class="p-hora">' + h + '</div>';
+}
+function pantMostrar(d) {
+  $('#pant').className = d.tipo;
+  const ico = d.tipo === 'ok' ? '✓' : d.tipo === 'warn' ? '!' : '✕';
+  $('#pantCont').innerHTML = '<div class="p-ico">' + ico + '</div><div class="p-tit">' + esc(d.titulo) + '</div>' +
+    (d.nombre ? '<div class="p-nom">' + esc(d.nombre) + '</div><div class="p-lug">' + esc(d.lugar) + '</div>' : '');
+  sonar(d.tipo); vibrar(d.tipo === 'bad' ? [300, 100, 300] : 80);
+  clearTimeout(PANT.vuelta); PANT.vuelta = setTimeout(pantReposo, 6000);
+}
+async function pantConsultar() {
+  if (!PANT.on) return;
+  if (!PANT.ocupado) {
+    PANT.ocupado = true;
+    try {
+      const j = await api({ accion: 'pantalla', canal: CANAL });
+      const d = j.dato;
+      if (!PANT.base) { PANT.base = true; PANT.ult = d ? d.id : 0; }          // lo anterior a abrir la pantalla no se enseña
+      else if (d && d.id > PANT.ult) { PANT.ult = d.id; pantMostrar(d); }
+      $('#pantEstado').textContent = 'Pantalla conectada';
+    } catch (e) {
+      if (!TOKEN) { pantSalir(); return; }                                    // sesión caducada: vuelve al PIN
+      $('#pantEstado').textContent = 'Sin conexión, reintentando…';
+    } finally { PANT.ocupado = false; }
+  }
+  PANT.t = setTimeout(pantConsultar, 1500);
+}
+async function pantDespierta() { try { if ('wakeLock' in navigator && PANT.on) PANT.wake = await navigator.wakeLock.request('screen'); } catch (e) {} }
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') pantDespierta(); });
+function pantEntrar() {
+  PANT.on = true; PANT.base = false;
+  $('#pant').classList.remove('hidden'); pantReposo(); audio();
+  try { document.documentElement.requestFullscreen && document.documentElement.requestFullscreen(); } catch (e) {}
+  pantDespierta(); pantConsultar();
+  PANT.reloj = setInterval(() => { if (!$('#pant').className) pantReposo(); }, 30000);
+}
+function pantSalir() {
+  PANT.on = false; clearTimeout(PANT.t); clearTimeout(PANT.vuelta); clearInterval(PANT.reloj);
+  $('#pant').classList.add('hidden'); $('#pant').className = 'hidden';
+  try { PANT.wake && PANT.wake.release(); } catch (e) {}
+  try { document.fullscreenElement && document.exitFullscreen(); } catch (e) {}
+}
+$('#btnPantalla').onclick = pantEntrar;
+$('#pantSalir').onclick = () => { if (confirm('¿Dejar de usar este aparato como pantalla?')) pantSalir(); };
 $('#chkFlash').checked = LS.get('lodnfc_flash') === '1';
 $('#chkFlash').onchange = () => LS.set('lodnfc_flash', $('#chkFlash').checked ? '1' : '0');
 
 function pintar(tipo, titulo, html) {
-  destello(tipo, titulo); $('#res').innerHTML = '<div class="res ' + tipo + '"><div class="big">' + esc(titulo) + '</div>' + (html || '') + '</div>'; }
+  destello(tipo, titulo); sonar(tipo); $('#res').innerHTML = '<div class="res ' + tipo + '"><div class="big">' + esc(titulo) + '</div>' + (html || '') + '</div>'; }
 function pintarPersona(tipo, titulo, p) {
-  destello(tipo, titulo + ' · ' + p.Nombre);
+  destello(tipo, titulo + ' · ' + p.Nombre); sonar(tipo);
   $('#res').innerHTML = '<div class="res ' + tipo + '"><div class="big">' + esc(titulo) + '</div>' +
     '<h2>' + esc(p.Nombre) + '</h2>' +
     '<div class="meta">' + esc(p.Expediente) + ' · ' + esc(p.Seccion) + ' ' + esc(p.Plaza) + (p.TipoPlaza === 'ESCM' ? ' · ESCM' : '') +
